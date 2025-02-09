@@ -1,1 +1,7 @@
+__pycache__
 env
+.env
+*.pyc
+*.log
+*.sqlite3
+.DS_Store
