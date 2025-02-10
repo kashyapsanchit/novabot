@@ -1,9 +1,13 @@
 from langchain.tools import tool
 from langchain_core.tools import Tool
 from config import get_qdrant_client
+from qdrant_client.http.models import PointStruct
+from qdrant_client.models import Distance, VectorParams, CollectionStatus
+from schema import CustomerTicket, ProductManual
+from utils import Embedding
 
 qdrant_client = get_qdrant_client()
-
+embeddings = Embedding()
 
 @tool
 def search_product_manual(query: str) -> str:
@@ -53,28 +57,33 @@ def add_customer_ticket(ticket_data: str) -> str:
         return f"Error adding ticket: {str(e)}"
 
 @tool
-def add_product_manual(manual_data: str) -> str:
+def add_product_manual(manual_data) -> str:
     """Add a new product manual to the system."""
     try:
-        # Convert string input to ProductManual object
         manual_dict = eval(manual_data)
-        manual = ProductManual(**manual_dict)
+        manual_data = ProductManual(**manual_dict)
+        manual_vector = embeddings.create_manual_embeddings(manual_data.content)
+
+        payload = {
+                "title": manual_data.title,
+                "description": manual_data.description,
+                "last_updated": manual_data.last_updated
+            }
         
-        # Create embedding for manual content
-        manual_vector = embeddings.embed_text(manual.content)
-        
-        # Store in Qdrant
+        points = PointStruct(
+            id=manual_data.product_id,
+            vector=manual_vector,
+            payload=payload
+        )
+
         qdrant_client.upsert(
             collection_name="product_manuals",
-            points=[{
-                "id": hash(manual.product_id + manual.version),
-                "vector": manual_vector,
-                "payload": manual.dict()
-            }]
+            points=[points]
         )
-        return f"Successfully added manual for product: {manual.product_id}"
+        return f"Successfully added manual for product: {manual_data.title}"
     except Exception as e:
         return f"Error adding manual: {str(e)}"
+    
     
 
 tools = [

@@ -1,1 +1,1 @@
-from .config import get_qdrant_client
+from .config import get_qdrant_client, get_llm

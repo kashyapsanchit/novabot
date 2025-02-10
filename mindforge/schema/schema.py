@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-import datetime
+from datetime import datetime
 import uuid
 
 class CustomerTicket(BaseModel):
@@ -13,7 +13,7 @@ class CustomerTicket(BaseModel):
 class ProductManual(BaseModel):
     product_id: str = str(uuid.uuid4())
     title: str
-    content: str
+    content: bytes
     description: str
     last_updated: str = datetime.now().isoformat()
 
