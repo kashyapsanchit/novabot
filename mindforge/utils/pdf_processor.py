@@ -1,58 +1,36 @@
-import pdfplumber
-import fitz  # PyMuPDF
-import io
 import base64
-from PIL import Image
+from io import BytesIO
+from unstructured.partition.pdf import partition_pdf
 
-def extract_text_and_images(pdf_path):
-    """Extracts text and images from the PDF."""
-    text_data = []
+def extract_data(file_bytes: bytes):
+    
+    with BytesIO(file_bytes) as pdf_file:
+        elements = partition_pdf(
+            file=pdf_file,  
+            extract_image_block_types=['Image'], 
+            extract_image_block_to_payload=True,
+            strategy="hi_res"
+        )
+        
     image_data = []
+    text_data = []
 
-    # ✅ Convert bytes to BytesIO for pdfplumber, keep raw bytes for PyMuPDF
-    if isinstance(pdf_path, bytes):
-        pdf_bytes = pdf_path  # Keep raw bytes for fitz
-        pdf_path = io.BytesIO(pdf_path)  # Convert for pdfplumber
-    else:
-        with open(pdf_path, "rb") as f:
-            pdf_bytes = f.read()  # Read raw bytes for fitz
+    for element in elements:
+        if element.category == "Image":
+            page_num = getattr(element, 'page_number', 0)
+            img_base64 = element.metadata.image_base64                
+            text = element.text
 
-    with pdfplumber.open(pdf_path) as pdf:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")  # ✅ Use raw bytes
+            image_data.append({
+                'img_base64': img_base64,
+                'page_num': page_num,  
+                'text': text,
+            })
 
-        for page_num, page in enumerate(pdf.pages):
-            # ✅ Extract text properly
-            text = page.extract_text()
-            if text:
-                text_data.append((page_num, text))
+        elif element.category in ["UncategorizedText", "Text", "NarrativeText"]:
+            text_data.append(element.text)
 
-            # ✅ Extract images (including rendered vector graphics)
-            pdf_page = doc[page_num]
-            img_list = pdf_page.get_images(full=True)
-
-            if not img_list:
-                # If no embedded images, render the page as an image
-                pix = pdf_page.get_pixmap()
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                
-                buffered = io.BytesIO()
-                img.save(buffered, format="PNG")
-                img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-                image_data.append((page_num, img_base64))
-
-            else:
-                # Extract embedded images
-                for img_index, img in enumerate(img_list):
-                    xref = img[0]
-                    base_image = doc.extract_image(xref)
-                    image_bytes = base_image["image"]
-                    image = Image.open(io.BytesIO(image_bytes))
-                    if image.mode == "CMYK":
-                        image = image.convert("RGB")
-                    buffered = io.BytesIO()
-                    image.save(buffered, format="PNG")
-                    img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-                    image_data.append((page_num, img_base64))
-
-    return text_data, image_data
+    return {
+        'image_data': image_data,
+        'text_data': text_data,
+    }

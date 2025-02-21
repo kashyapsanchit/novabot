@@ -1,92 +1,149 @@
-from transformers import CLIPProcessor, CLIPModel
-from sentence_transformers import SentenceTransformer
-from utils.pdf_processor import extract_text_and_images
-from PIL import Image
 import torch
+import clip
 import base64
+from PIL import Image
 from io import BytesIO
 import numpy as np
-
-
+from dotenv import load_dotenv
+from config import get_qdrant_client
+from qdrant_client.models import PointStruct, VectorParams, Distance
+from .pdf_processor import extract_data
+import logging
+import uuid
 from sentence_transformers import SentenceTransformer
-from transformers import CLIPProcessor, CLIPModel
-from PIL import Image
-from io import BytesIO
-import base64
-import torch
-import torch.nn as nn
 
-class Embedding:
-    def __init__(self):
-        self.text_model = SentenceTransformer("sentence-transformers/msmarco-MiniLM-L12-cos-v5")
-        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+
+logging.info("Initializing CLIP model...")
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model, preprocess = clip.load("ViT-B/32", device=device)
+
+logging.info("Initializing TEXT model...")
+text_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+qdrant = get_qdrant_client()
+
+def base64_to_image(base64_str):
+    """Converts a base64 string to a PIL image"""
+    image_data = base64.b64decode(base64_str)
+    return Image.open(BytesIO(image_data))
+
+def get_image_embedding(base64_str):
+    """Generate embedding for a base64 image"""
+    image = base64_to_image(base64_str)
+    image = preprocess(image).unsqueeze(0).to(device)
+    with torch.no_grad():
+        embedding = model.encode_image(image).cpu().numpy()
+    return embedding.flatten().tolist()
+
+def get_text_embedding(text_query):
+    """Generate embedding for a text query using SentenceTransformer"""
+    embedding = text_model.encode([text_query])  
+    return embedding.flatten().tolist()  
+
+def get_text_embedding_clip(text_query, top_k=5):
+    """Search for images in Qdrant using a text query"""
+    text = clip.tokenize([text_query]).to(device)
+    with torch.no_grad():
+        embedding = model.encode_text(text).cpu().numpy()
+    return embedding.flatten().tolist()
+
+
+def insert_data(content):
+
+    try:
+        if not qdrant.collection_exists("image_collection"):
+            qdrant.create_collection(
+                collection_name="image_collection",
+                vectors_config=VectorParams(
+                    size=512,  
+                    distance=Distance.COSINE  
+                )
+            )
+
+        logging.info("Extracting images from PDF...")    
+        data = extract_data(content)
+        images = data['image_data']
+        texts = data['text_data']
         
-        # Linear projection layer to match dimensions
-        self.text_projection = nn.Linear(384, 512)
+        logging.info(f"Extracted {len(images)} images.")
         
-    def encode_text(self, text):
-        """Encodes text into a 512-dim vector."""
+        image_points = []
+        text_points = []
 
-        text_embedding = self.text_model.encode(text)
-        
-        if not isinstance(text_embedding, torch.Tensor):
-            text_embedding = torch.tensor(text_embedding, dtype=torch.float32)
-        
-        with torch.no_grad():
-            projected_embedding = self.text_projection(text_embedding)
+        for image_data in images:
+            embedding = get_image_embedding(image_data['img_base64'])
+            image_points.append(
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=embedding,
+                    payload={"id": str(uuid.uuid4()), "img_base64": image_data['img_base64'], "text": image_data['text']}  
+                )
+            )
 
-            normalized_embedding = torch.nn.functional.normalize(projected_embedding, p=2, dim=0)
-            
-        return normalized_embedding.tolist()
+        logging.info("Inserting images into Qdrant...")
+        qdrant.upsert(collection_name="image_collection", points=image_points)
 
-    def encode_image(self, image_base64):
-        """Encodes an image into a 512-dim vector using CLIP."""
-        image_data = base64.b64decode(image_base64)
-        image = Image.open(BytesIO(image_data)).convert("RGB")
+        if not qdrant.collection_exists("text_collection"):
+            qdrant.create_collection(
+                collection_name="text_collection",
+                vectors_config=VectorParams(
+                    size=384,  
+                    distance=Distance.COSINE  
+                )
+            )
 
-        inputs = self.clip_processor(images=image, return_tensors="pt")
-        with torch.no_grad():
-            outputs = self.clip_model.get_image_features(**inputs)
-            # Normalize the image embedding
-            normalized_outputs = torch.nn.functional.normalize(outputs.squeeze(), p=2, dim=0)
+        for text_data in texts:
+            embedding = get_text_embedding(text_data)
+            text_points.append(
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=embedding,
+                    payload={"text": text_data}
+                )
+            )
 
-        return normalized_outputs.tolist()
+        qdrant.upsert(collection_name="text_collection", points=text_points)
 
-    def create_manual_embeddings(self, content):
-        text_data, image_data = extract_text_and_images(content)
-        vectors = []
+        logging.info("Data inserted successfully.")
+        return True
 
-        for page_num, text in text_data:
-            text_vector = self.encode_text(text)
-            vectors.append(text_vector)
-                
-        for page_num, image_base64 in image_data:
-            image_vector = self.encode_image(image_base64)
-            vectors.append(image_vector)
+    except Exception as e:
+        logging.error(f"Error inserting data: {e}")
+        return False
 
-        combined_vector = np.mean(vectors, axis=0)
-        
-        # Normalize the final vector
-        final_vector = combined_vector / np.linalg.norm(combined_vector)
-        
-        return final_vector.tolist() 
 
-    def query_manual(self,query):
-        """Retrieves relevant text and images from Qdrant."""
+def search_data(query:str):
 
-        query_vector = self.text_model.encode(query).tolist()
 
-        search_results = self.qdrant.search(collection_name='product_manuals', query_vector=query_vector, limit=5)
+    query_vector = get_text_embedding(query)
+    query_vector_512 = get_text_embedding_clip(query)
 
-        response = []
-        for result in search_results:
-            payload = result.payload
-            if payload["type"] == "text":
-                response.append(f"Page {payload['page']} - {payload['text']}")
-            elif payload["type"] == "image":
-                response.append(f"Page {payload['page']} - Image (Base64): {payload['image']}")
+    text_search_results = qdrant.search(
+        collection_name="text_collection",
+        query_vector=query_vector,
+        limit=5, 
+        with_payload=True
+    )
 
-        return response
+    text_results = [result.payload['text'] for result in text_search_results]
+
+    image_search_results = qdrant.search(
+        collection_name="image_collection",
+        query_vector=query_vector_512,
+        limit=5,
+        with_payload=True
+    )
+
+    image_results = [result.payload['img_base64'] for result in image_search_results]
+
+    data = {
+        "text_results": text_results,
+        "image_results": image_results[0]
+    }
+
+    return data 
+
 
 

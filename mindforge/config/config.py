@@ -21,7 +21,8 @@ def get_qdrant_client() -> QdrantClient:
     settings = Settings()
     return QdrantClient(
         url=settings.QDRANT_HOST,
-        api_key=settings.QDRANT_KEY
+        api_key=settings.QDRANT_KEY,
+        timeout=30
     )
 
 @lru_cache()
@@ -31,4 +32,4 @@ def get_llm():
         model=settings.MODEL,
         api_key=settings.GROQ_KEY
     )
-    return llm
+    return llm 

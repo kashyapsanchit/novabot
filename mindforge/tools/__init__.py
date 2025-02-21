@@ -1,1 +1,1 @@
-from .tools import tools, add_product_manual
+from .tools import tools, add_product_manual, search_product_manual

@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
+from typing import List
 import uuid
 
 class CustomerTicket(BaseModel):
@@ -19,6 +20,7 @@ class ProductManual(BaseModel):
 
 
 class ChatInput(BaseModel):
+    session_id: str 
     message: str
 
 class ChatResponse(BaseModel):

@@ -1,12 +1,19 @@
 import streamlit as st
 import requests
+import uuid
+from PIL import Image
+
+st.set_page_config(
+    page_title="NovaBot",  
+    page_icon="🤖",
+    layout="wide"
+)
 
 st.title("NovaBot - Your BigCommerce Support Assistant")
 
 with st.sidebar:
     st.header("Add New Content")
     
-    # Add Product Manual
     st.subheader("Add Product Manual")
     manual_file = st.file_uploader("Upload Manual", type=["txt", "md", "pdf"])
     manual_title = st.text_input("Manual Title")
@@ -21,7 +28,6 @@ with st.sidebar:
         response = requests.post("http://localhost:8000/upload-manual", files=files, data=data)
         st.success(response.json()["message"])
     
-    # Add Customer Ticket
     st.subheader("Add Customer Ticket")
     ticket_title = st.text_input("Ticket Title")
     ticket_description = st.text_area("Description")
@@ -37,30 +43,43 @@ with st.sidebar:
         response = requests.post("http://localhost:8000/chat", json={"message": chat_input})
         st.success(response.json()["response"])
 
-# Main chat interface
+
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())  
 
-# Display chat messages
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-# Chat input
 if prompt := st.chat_input("How can I help you today?"):
-    # Add user message to chat history
+
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
-    
-    # Get bot response
     response = requests.post(
         "http://localhost:8000/chat",
-        json={"message": prompt}
+        json={"session_id": st.session_state.session_id, "message": prompt}  
     )
-    bot_message = response.json()["response"]
+    import pdb; pdb.set_trace()
     
-    # Add bot response to chat history
+    response = response.json()
+
+    bot_message = response.get('message', None)
+    image = response.get("image", None)
+
     st.session_state.messages.append({"role": "assistant", "content": bot_message})
+    
     with st.chat_message("assistant"):
-        st.markdown(bot_message)
+        
+        if bot_message and image:
+            image = Image.open(image)
+            st.markdown(bot_message)
+            st.image(image, width=200)
+        
+        elif bot_message:
+            st.markdown(bot_message)
+        else:
+            st.markdown("I'm sorry, I do not know about that.")
